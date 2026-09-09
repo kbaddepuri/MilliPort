@@ -15,6 +15,7 @@ import {
 const money = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
 const preciseMoney = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(n);
 const sharesText = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 6 });
+const QUOTE_REFRESH_MS = 30_000;
 
 type HoldingView = {
   ticker: string;
@@ -56,8 +57,9 @@ export default function Home() {
       ...state.recommendations.filter((r) => r.status === "PENDING").map((r) => r.ticker),
     ]));
 
-    fetch(`/api/quotes?symbols=${encodeURIComponent(symbols.join(","))}`)
-      .then(async (response) => {
+    const refreshQuotes = async () => {
+      try {
+        const response = await fetch(`/api/quotes?symbols=${encodeURIComponent(symbols.join(","))}`, { cache: "no-store" });
         const data = await response.json();
         if (cancelled) return;
         if (!response.ok) {
@@ -67,15 +69,21 @@ export default function Home() {
         }
         setQuotes(Object.fromEntries((data.quotes as Quote[]).map((quote) => [quote.ticker, quote])));
         setMarketState("live");
-        setMessage(`Updated ${new Date(data.fetchedAt).toLocaleTimeString()}`);
-      })
-      .catch(() => {
+        setMessage(`Updated ${new Date(data.fetchedAt).toLocaleTimeString()} · auto-refresh 30s`);
+      } catch {
         if (!cancelled) {
           setMarketState("error");
           setMessage("Could not reach the market-data API.");
         }
-      });
-    return () => { cancelled = true; };
+      }
+    };
+
+    refreshQuotes();
+    const intervalId = window.setInterval(refreshQuotes, QUOTE_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
   }, [state.positions, state.recommendations]);
 
   const pending = state.recommendations.filter((r) => r.status === "PENDING");
