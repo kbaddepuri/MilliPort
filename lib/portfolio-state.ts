@@ -1,13 +1,13 @@
 export type Action = "BUY" | "HOLD" | "WATCH" | "SELL" | "EXIT";
 export type RecommendationStatus = "PENDING" | "APPROVED" | "REJECTED";
 export type ShareSource = "DERIVED" | "MANUAL";
-
 export type Position = { ticker: string; shares: number; avgCost: number; source: ShareSource };
 export type Transaction = { id: string; ticker: string; side: "BUY" | "SELL"; shares: number; price: number; amount: number; createdAt: string; source: "AGENT" | "MANUAL" };
 export type Recommendation = { id: string; ticker: string; action: Action; amount: number; thesis: string; status: RecommendationStatus; createdAt: string; decidedAt?: string };
 export type PortfolioState = { cash: number; positions: Position[]; transactions: Transaction[]; recommendations: Recommendation[] };
 
-export const STORAGE_KEY = "milliport:m3:v2:portfolio-state";
+// Bump the storage key so an older V2 browser state cannot hide the M3 approval queue.
+export const STORAGE_KEY = "milliport:m3:v3:portfolio-state";
 
 export const initialRecommendations: Recommendation[] = [
   { id: "rec-aph-sell-550", ticker: "APH", action: "SELL", amount: 550, thesis: "Excellent business, but trim to fund higher-conviction opportunities.", status: "PENDING", createdAt: "2026-09-09T00:00:00.000Z" },
@@ -18,7 +18,7 @@ export const initialRecommendations: Recommendation[] = [
 ];
 
 export const emptyPortfolioState = (): PortfolioState => ({ cash: 10, positions: [], transactions: [], recommendations: initialRecommendations });
-export function positionFor(state: PortfolioState, ticker: string) { return state.positions.find((p) => p.ticker === ticker); }
+export function positionFor(state: PortfolioState, ticker: string): Position | undefined { return state.positions.find((p) => p.ticker === ticker); }
 export function upsertPosition(state: PortfolioState, next: Position): PortfolioState {
   const positions = state.positions.some((p) => p.ticker === next.ticker) ? state.positions.map((p) => p.ticker === next.ticker ? next : p) : [...state.positions, next];
   return { ...state, positions };
