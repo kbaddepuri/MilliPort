@@ -38,8 +38,9 @@ export type PortfolioState = {
   recommendations: Recommendation[];
 };
 
-// M3 v2 supports automatic share estimates plus an optional exact broker override.
-export const STORAGE_KEY = "milliport:m3:v2:portfolio-state";
+// M4 uses the actual broker quantities supplied by the user as the portfolio source of truth.
+// Bump the storage key so old estimated-share state cannot override the exact imported positions.
+export const STORAGE_KEY = "milliport:m4:portfolio-state";
 
 export const initialRecommendations: Recommendation[] = [
   { id: "rec-aph-sell-550", ticker: "APH", action: "SELL", amount: 550, thesis: "Excellent business, but trim to fund higher-conviction opportunities.", status: "PENDING", createdAt: "2026-09-09T00:00:00.000Z" },
@@ -49,20 +50,20 @@ export const initialRecommendations: Recommendation[] = [
   { id: "rec-poet-buy-400", ticker: "POET", action: "BUY", amount: 400, thesis: "Asymmetric optical-interconnect opportunity; high execution risk. Add selectively up to $400.", status: "PENDING", createdAt: "2026-09-09T00:00:00.000Z" },
 ];
 
-// Approximate quantities reconstructed from the imported broker snapshot.
-// They are intentionally marked DERIVED and can be replaced with exact broker quantities.
+// Exact broker snapshot supplied by the user on 2026-09-09.
+// Market values, cost basis, and P&L are derived from these quantities plus live prices.
 export const initialPositions: Position[] = [
-  { ticker: "NVDA", shares: 18.82, avgCost: 0, source: "DERIVED" },
-  { ticker: "SKHY", shares: 12.13, avgCost: 0, source: "DERIVED" },
-  { ticker: "POWL", shares: 6.09, avgCost: 0, source: "DERIVED" },
-  { ticker: "APH", shares: 11.03, avgCost: 0, source: "DERIVED" },
-  { ticker: "SPCX", shares: 10.23, avgCost: 0, source: "DERIVED" },
-  { ticker: "HUBB", shares: 3.11, avgCost: 0, source: "DERIVED" },
-  { ticker: "GOOG", shares: 4.49, avgCost: 0, source: "DERIVED" },
-  { ticker: "POET", shares: 140.92, avgCost: 0, source: "DERIVED" },
-  { ticker: "SMCI", shares: 20.30, avgCost: 0, source: "DERIVED" },
-  { ticker: "SNDK", shares: 0.413, avgCost: 0, source: "DERIVED" },
-  { ticker: "VERA", shares: 39.22, avgCost: 0, source: "DERIVED" },
+  { ticker: "APH", shares: 20, avgCost: 79.00, source: "DERIVED" },
+  { ticker: "GOOG", shares: 3.9, avgCost: 369.230769, source: "DERIVED" },
+  { ticker: "HUBB", shares: 3.3333, avgCost: 450.004500, source: "DERIVED" },
+  { ticker: "NVDA", shares: 15.015, avgCost: 175.158175, source: "DERIVED" },
+  { ticker: "POET", shares: 100, avgCost: 7.19, source: "DERIVED" },
+  { ticker: "POWL", shares: 10, avgCost: 171.00, source: "DERIVED" },
+  { ticker: "SKHY", shares: 13, avgCost: 160.769231, source: "DERIVED" },
+  { ticker: "SMCI", shares: 20, avgCost: 36.65, source: "DERIVED" },
+  { ticker: "SNDK", shares: 0.4057, avgCost: 1782.105004, source: "DERIVED" },
+  { ticker: "SPCX", shares: 10.2, avgCost: 173.529412, source: "DERIVED" },
+  { ticker: "VERA", shares: 10, avgCost: 38.30, source: "DERIVED" },
 ];
 
 export const emptyPortfolioState = (): PortfolioState => ({
