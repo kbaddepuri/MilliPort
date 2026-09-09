@@ -38,7 +38,7 @@ export type PortfolioState = {
   recommendations: Recommendation[];
 };
 
-// Bump this when the persisted state shape changes during the MVP.
+// M3 v2 supports automatic share estimates plus an optional exact broker override.
 export const STORAGE_KEY = "milliport:m3:v2:portfolio-state";
 
 export const initialRecommendations: Recommendation[] = [
@@ -49,11 +49,27 @@ export const initialRecommendations: Recommendation[] = [
   { id: "rec-poet-buy-400", ticker: "POET", action: "BUY", amount: 400, thesis: "Asymmetric optical-interconnect opportunity; high execution risk. Add selectively up to $400.", status: "PENDING", createdAt: "2026-09-09T00:00:00.000Z" },
 ];
 
+// Approximate quantities reconstructed from the imported broker snapshot.
+// They are intentionally marked DERIVED and can be replaced with exact broker quantities.
+export const initialPositions: Position[] = [
+  { ticker: "NVDA", shares: 18.82, avgCost: 0, source: "DERIVED" },
+  { ticker: "SKHY", shares: 12.13, avgCost: 0, source: "DERIVED" },
+  { ticker: "POWL", shares: 6.09, avgCost: 0, source: "DERIVED" },
+  { ticker: "APH", shares: 11.03, avgCost: 0, source: "DERIVED" },
+  { ticker: "SPCX", shares: 10.23, avgCost: 0, source: "DERIVED" },
+  { ticker: "HUBB", shares: 3.11, avgCost: 0, source: "DERIVED" },
+  { ticker: "GOOG", shares: 4.49, avgCost: 0, source: "DERIVED" },
+  { ticker: "POET", shares: 140.92, avgCost: 0, source: "DERIVED" },
+  { ticker: "SMCI", shares: 20.30, avgCost: 0, source: "DERIVED" },
+  { ticker: "SNDK", shares: 0.413, avgCost: 0, source: "DERIVED" },
+  { ticker: "VERA", shares: 39.22, avgCost: 0, source: "DERIVED" },
+];
+
 export const emptyPortfolioState = (): PortfolioState => ({
   cash: 10,
-  positions: [],
+  positions: initialPositions.map(position => ({ ...position })),
   transactions: [],
-  recommendations: initialRecommendations,
+  recommendations: initialRecommendations.map(recommendation => ({ ...recommendation })),
 });
 
 export function positionFor(state: PortfolioState, ticker: string): Position | undefined {
