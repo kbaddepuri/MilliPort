@@ -16,6 +16,15 @@ const money = (n: number) => new Intl.NumberFormat("en-US", { style: "currency",
 const preciseMoney = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(n);
 const sharesText = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 6 });
 
+type HoldingView = {
+  ticker: string;
+  name: string;
+  snapshotValue: number;
+  action: "BUY" | "HOLD" | "WATCH" | "SELL" | "EXIT";
+  actionAmount: number;
+  thesis: string;
+};
+
 export default function Home() {
   const [quotes, setQuotes] = useState<Record<string, Quote>>({});
   const [marketState, setMarketState] = useState<"loading" | "live" | "unconfigured" | "error">("loading");
@@ -41,7 +50,13 @@ export default function Home() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/quotes")
+    const symbols = Array.from(new Set([
+      ...portfolio.map((holding) => holding.ticker),
+      ...state.positions.map((position) => position.ticker),
+      ...state.recommendations.filter((r) => r.status === "PENDING").map((r) => r.ticker),
+    ]));
+
+    fetch(`/api/quotes?symbols=${encodeURIComponent(symbols.join(","))}`)
       .then(async (response) => {
         const data = await response.json();
         if (cancelled) return;
@@ -61,14 +76,11 @@ export default function Home() {
         }
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [state.positions, state.recommendations]);
 
   const pending = state.recommendations.filter((r) => r.status === "PENDING");
   const decided = state.recommendations.filter((r) => r.status !== "PENDING");
 
-  // If the user has not supplied broker quantities, derive shares from the
-  // known snapshot dollar value and the current live price. A manual quantity
-  // always overrides this derived value.
   function derivedShares(ticker: string, snapshotValue: number) {
     const quote = quotes[ticker];
     return quote && quote.price > 0 ? snapshotValue / quote.price : undefined;
@@ -80,15 +92,40 @@ export default function Home() {
     return derivedShares(ticker, snapshotValue) ?? 0;
   }
 
+  const holdingViews = useMemo<HoldingView[]>(() => {
+    const base = portfolio.map((holding) => ({
+      ticker: holding.ticker,
+      name: holding.name,
+      snapshotValue: holding.value,
+      action: holding.action,
+      actionAmount: holding.actionAmount,
+      thesis: holding.thesis,
+    }));
+
+    for (const position of state.positions) {
+      if (!base.some((holding) => holding.ticker === position.ticker)) {
+        base.push({
+          ticker: position.ticker,
+          name: `${position.ticker} position`,
+          snapshotValue: position.shares * (quotes[position.ticker]?.price ?? 0),
+          action: "HOLD",
+          actionAmount: 0,
+          thesis: "Approved position; included in portfolio state.",
+        });
+      }
+    }
+    return base;
+  }, [state.positions, quotes]);
+
   const portfolioValue = useMemo(() => {
-    return portfolio.reduce((sum, holding) => {
+    const investments = holdingViews.reduce((sum, holding) => {
       const position = positionFor(state, holding.ticker);
       const quote = quotes[holding.ticker];
       if (position && quote) return sum + position.shares * quote.price;
-      const derived = quote && quote.price > 0 ? holding.value / quote.price : undefined;
-      return sum + (derived !== undefined ? derived * quote!.price : holding.value);
+      return sum + holding.snapshotValue;
     }, 0);
-  }, [state, quotes]);
+    return investments + state.cash;
+  }, [holdingViews, state, quotes]);
 
   const progress = Math.min(100, portfolioValue / TARGET_VALUE * 100);
   const gap = Math.max(0, TARGET_VALUE - portfolioValue);
@@ -97,14 +134,20 @@ export default function Home() {
 
   function setManualShares(ticker: string, raw: string) {
     const value = raw.trim();
-    const shares = Number(value);
+    const current = positionFor(state, ticker);
+
     if (value === "") {
-      setState(current => ({ ...current, positions: current.positions.filter(p => p.ticker !== ticker) }));
+      if (!current) return;
+      if (current.source === "MANUAL") {
+        setState((currentState) => upsertPosition(currentState, { ...current, source: "DERIVED" }));
+        setNotice(`${ticker} returned to automatic share derivation.`);
+      }
       return;
     }
+
+    const shares = Number(value);
     if (!Number.isFinite(shares) || shares < 0) return;
-    const current = positionFor(state, ticker);
-    setState(upsertPosition(state, {
+    setState((currentState) => upsertPosition(currentState, {
       ticker,
       shares,
       avgCost: current?.avgCost ?? 0,
@@ -121,7 +164,7 @@ export default function Home() {
     }
 
     const position = positionFor(state, rec.ticker);
-    const knownHolding = portfolio.find(h => h.ticker === rec.ticker);
+    const knownHolding = portfolio.find((h) => h.ticker === rec.ticker);
     const availableShares = position?.shares ?? (knownHolding ? derivedShares(rec.ticker, knownHolding.value) : 0) ?? 0;
     const shares = rec.amount / quote.price;
 
@@ -151,7 +194,7 @@ export default function Home() {
         ticker: rec.ticker,
         shares: oldShares + shares,
         avgCost: totalCost / (oldShares + shares),
-        source: "MANUAL",
+        source: "DERIVED",
       });
       next.cash -= rec.amount;
     } else if (rec.action === "SELL") {
@@ -202,12 +245,12 @@ export default function Home() {
     </header>
 
     <section className="hero">
-      <div className="panel"><div className="eyebrow">Portfolio Growth Engine</div><h1>Build toward <span className="positive">$30K.</span></h1><p>MilliPort derives trade quantities from live prices and known portfolio values. You approve dollar decisions; manual broker share quantities are optional and always take precedence.</p></div>
+      <div className="panel"><div className="eyebrow">Portfolio Growth Engine</div><h1>Build toward <span className="positive">$30K.</span></h1><p>MilliPort recommends trades in dollars, derives the required share quantity from the live price, and automatically adds approved positions to the portfolio. Exact broker share quantities remain optional.</p></div>
       <div className="panel target"><div className="eyebrow">Mission progress</div><div className="value">{money(portfolioValue)}</div><div className="muted">of {money(TARGET_VALUE)}</div><div className="progress"><i style={{ width: `${progress}%` }} /></div><div className="muted">{progress.toFixed(1)}% · {money(gap)} remaining</div></div>
     </section>
 
     <section className="grid">
-      <div className="panel metric"><div className="label">Portfolio value</div><div className="number">{money(portfolioValue)}</div><div className="reason">{marketState === "live" ? "Live quotes × derived/manual shares" : "Snapshot until live quotes are configured"}</div></div>
+      <div className="panel metric"><div className="label">Portfolio value</div><div className="number">{money(portfolioValue)}</div><div className="reason">{marketState === "live" ? "Live quotes × effective shares + cash" : "Snapshot until live quotes are configured"}</div></div>
       <div className="panel metric"><div className="label">Recorded cash</div><div className="number">{money(state.cash)}</div><div className="reason">Updated only by approved transactions</div></div>
       <div className="panel metric"><div className="label">Pending approvals</div><div className="number">{pending.length}</div><div className="reason">Agent recommendations awaiting you</div></div>
       <div className="panel metric"><div className="label">Transactions</div><div className="number">{approvedCount}</div><div className="reason">Approved in MilliPort</div></div>
@@ -217,12 +260,12 @@ export default function Home() {
 
     <section className="panel">
       <div className="eyebrow">Human approval gate</div><h2>Pending actions</h2>
-      <p className="section-note">Approve the <strong>dollar amount</strong>. MilliPort calculates the required shares at the current live price. It does <strong>not</strong> place a trade with your broker.</p>
+      <p className="section-note">Approve the <strong>dollar amount</strong>. MilliPort calculates the required shares at the current live price. After approval, the resulting position is immediately included in Holdings &amp; Portfolio Value.</p>
       {pending.length === 0 ? <div className="empty">No pending recommendations. The portfolio is waiting for the next agent decision.</div> : <div className="approval-list">
-        {pending.map(rec => {
+        {pending.map((rec) => {
           const q = quotes[rec.ticker];
           const position = positionFor(state, rec.ticker);
-          const knownHolding = portfolio.find(h => h.ticker === rec.ticker);
+          const knownHolding = portfolio.find((h) => h.ticker === rec.ticker);
           const availableShares = position?.shares ?? (knownHolding && q ? knownHolding.value / q.price : undefined);
           return <div className="approval" key={rec.id}>
             <div><div className="ticker">{rec.ticker}</div><div className="reason">{rec.thesis}</div></div>
@@ -240,22 +283,23 @@ export default function Home() {
 
     <section className="panel" style={{ marginTop: 18 }}>
       <div className="eyebrow">Portfolio state</div><h2>Holdings &amp; share quantities</h2>
-      <p className="section-note">MilliPort automatically derives shares from the known dollar holding and current price. If you know the exact broker quantity, enter it below; that manual value overrides the derived quantity. Clear the field to return to automatic derivation.</p>
+      <p className="section-note">AUTO uses MilliPort's known dollar holding and the current price. MANUAL lets you enter the exact broker quantity at any time. Manual quantities always take precedence; clear a manual field to return to the automatic/derived position.</p>
       <div className="table-wrap"><table className="table"><thead><tr><th>Asset</th><th>Shares</th><th>Price</th><th>Market value</th><th>Avg cost</th><th>Action</th></tr></thead><tbody>
-        {portfolio.map(h => {
+        {holdingViews.map((h) => {
           const p = positionFor(state, h.ticker);
           const q = quotes[h.ticker];
-          const derived = derivedShares(h.ticker, h.value);
-          const shares = effectiveShares(h.ticker, h.value);
-          const value = q ? shares * q.price : h.value;
+          const derived = !p || p.source === "DERIVED" ? derivedShares(h.ticker, h.snapshotValue) : undefined;
+          const shares = effectiveShares(h.ticker, h.snapshotValue);
+          const value = q ? shares * q.price : h.snapshotValue;
           return <tr key={h.ticker}>
             <td><div className="ticker">{h.ticker}</div><div className="reason">{h.name}</div></td>
             <td>
               <div className="share-cell">
-                <input className="shares-input" type="number" min="0" step="any" placeholder={derived !== undefined ? sharesText(derived) : "Auto"} value={p?.source === "MANUAL" ? p.shares : ""} onChange={e => setManualShares(h.ticker, e.target.value)} />
+                <input className="shares-input" type="number" min="0" step="any" placeholder={derived !== undefined ? sharesText(derived) : "Auto"} value={p?.source === "MANUAL" ? p.shares : ""} onChange={(e) => setManualShares(h.ticker, e.target.value)} />
                 <span className={`share-source ${p?.source === "MANUAL" ? "manual" : "derived"}`}>{p?.source === "MANUAL" ? "MANUAL" : "AUTO"}</span>
               </div>
-              {p?.source !== "MANUAL" && derived !== undefined && <div className="reason">Derived: {sharesText(derived)}</div>}
+              {p?.source === "DERIVED" && <div className="reason">Approved: {sharesText(p.shares)} shares</div>}
+              {!p && derived !== undefined && <div className="reason">Derived: {sharesText(derived)}</div>}
             </td>
             <td>{q ? preciseMoney(q.price) : "—"}</td>
             <td>{money(value)}</td>
@@ -276,8 +320,8 @@ export default function Home() {
     <section className="panel history" style={{ marginTop: 18 }}>
       <div className="eyebrow">Audit trail</div><h2>Decision history</h2>
       {decided.length === 0 && state.transactions.length === 0 ? <div className="empty">No decisions yet.</div> : <>
-        {decided.slice().reverse().map(r => <div className="history-row" key={r.id}><span className={`action ${r.action.toLowerCase()}`}>{r.status}</span><strong>{r.ticker}</strong><span>{r.action} {money(r.amount)}</span><span className="reason">{r.decidedAt ? new Date(r.decidedAt).toLocaleString() : "—"}</span></div>)}
-        {state.transactions.slice().reverse().map(t => <div className="history-row" key={t.id}><span className="action hold">RECORDED</span><strong>{t.ticker}</strong><span>{t.side} {sharesText(t.shares)} @ {preciseMoney(t.price)}</span><span className="reason">{new Date(t.createdAt).toLocaleString()}</span></div>)}
+        {decided.slice().reverse().map((r) => <div className="history-row" key={r.id}><span className={`action ${r.action.toLowerCase()}`}>{r.status}</span><strong>{r.ticker}</strong><span>{r.action} {money(r.amount)}</span><span className="reason">{r.decidedAt ? new Date(r.decidedAt).toLocaleString() : "—"}</span></div>)}
+        {state.transactions.slice().reverse().map((t) => <div className="history-row" key={t.id}><span className="action hold">RECORDED</span><strong>{t.ticker}</strong><span>{t.side} {sharesText(t.shares)} @ {preciseMoney(t.price)}</span><span className="reason">{new Date(t.createdAt).toLocaleString()}</span></div>)}
       </>}
     </section>
 
