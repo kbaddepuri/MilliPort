@@ -1,13 +1,46 @@
 export type Action = "BUY" | "HOLD" | "WATCH" | "SELL" | "EXIT";
 export type RecommendationStatus = "PENDING" | "APPROVED" | "REJECTED";
 export type ShareSource = "DERIVED" | "MANUAL";
-export type Position = { ticker: string; shares: number; avgCost: number; source: ShareSource };
-export type Transaction = { id: string; ticker: string; side: "BUY" | "SELL"; shares: number; price: number; amount: number; createdAt: string; source: "AGENT" | "MANUAL" };
-export type Recommendation = { id: string; ticker: string; action: Action; amount: number; thesis: string; status: RecommendationStatus; createdAt: string; decidedAt?: string };
-export type PortfolioState = { cash: number; positions: Position[]; transactions: Transaction[]; recommendations: Recommendation[] };
 
-// Bump the storage key so an older V2 browser state cannot hide the M3 approval queue.
-export const STORAGE_KEY = "milliport:m3:v3:portfolio-state";
+export type Position = {
+  ticker: string;
+  shares: number;
+  avgCost: number;
+  source: ShareSource;
+};
+
+export type Transaction = {
+  id: string;
+  ticker: string;
+  side: "BUY" | "SELL";
+  shares: number;
+  price: number;
+  amount: number;
+  createdAt: string;
+  source: "AGENT" | "MANUAL";
+};
+
+export type Recommendation = {
+  id: string;
+  ticker: string;
+  action: Action;
+  amount: number;
+  thesis: string;
+  status: RecommendationStatus;
+  createdAt: string;
+  decidedAt?: string;
+};
+
+export type PortfolioState = {
+  cash: number;
+  positions: Position[];
+  transactions: Transaction[];
+  recommendations: Recommendation[];
+};
+
+// M4 uses the actual broker quantities supplied by the user as the portfolio source of truth.
+// Bump the storage key so old estimated-share state cannot override the exact imported positions.
+export const STORAGE_KEY = "milliport:m4:portfolio-state";
 
 export const initialRecommendations: Recommendation[] = [
   { id: "rec-aph-sell-550", ticker: "APH", action: "SELL", amount: 550, thesis: "Excellent business, but trim to fund higher-conviction opportunities.", status: "PENDING", createdAt: "2026-09-09T00:00:00.000Z" },
@@ -17,9 +50,36 @@ export const initialRecommendations: Recommendation[] = [
   { id: "rec-poet-buy-400", ticker: "POET", action: "BUY", amount: 400, thesis: "Asymmetric optical-interconnect opportunity; high execution risk. Add selectively up to $400.", status: "PENDING", createdAt: "2026-09-09T00:00:00.000Z" },
 ];
 
-export const emptyPortfolioState = (): PortfolioState => ({ cash: 10, positions: [], transactions: [], recommendations: initialRecommendations });
-export function positionFor(state: PortfolioState, ticker: string): Position | undefined { return state.positions.find((p) => p.ticker === ticker); }
+// Exact broker snapshot supplied by the user on 2026-09-09.
+// Market values, cost basis, and P&L are derived from these quantities plus live prices.
+export const initialPositions: Position[] = [
+  { ticker: "APH", shares: 20, avgCost: 79.00, source: "DERIVED" },
+  { ticker: "GOOG", shares: 3.9, avgCost: 369.230769, source: "DERIVED" },
+  { ticker: "HUBB", shares: 3.3333, avgCost: 450.004500, source: "DERIVED" },
+  { ticker: "NVDA", shares: 15.015, avgCost: 175.024975, source: "DERIVED" },
+  { ticker: "POET", shares: 100, avgCost: 7.19, source: "DERIVED" },
+  { ticker: "POWL", shares: 10, avgCost: 171.00, source: "DERIVED" },
+  { ticker: "SKHY", shares: 13, avgCost: 160.769231, source: "DERIVED" },
+  { ticker: "SMCI", shares: 20, avgCost: 36.65, source: "DERIVED" },
+  { ticker: "SNDK", shares: 0.4057, avgCost: 1782.00, source: "DERIVED" },
+  { ticker: "SPCX", shares: 10.2, avgCost: 173.529412, source: "DERIVED" },
+  { ticker: "VERA", shares: 10, avgCost: 38.30, source: "DERIVED" },
+];
+
+export const emptyPortfolioState = (): PortfolioState => ({
+  cash: 10,
+  positions: initialPositions.map(position => ({ ...position })),
+  transactions: [],
+  recommendations: initialRecommendations.map(recommendation => ({ ...recommendation })),
+});
+
+export function positionFor(state: PortfolioState, ticker: string): Position | undefined {
+  return state.positions.find((p) => p.ticker === ticker);
+}
+
 export function upsertPosition(state: PortfolioState, next: Position): PortfolioState {
-  const positions = state.positions.some((p) => p.ticker === next.ticker) ? state.positions.map((p) => p.ticker === next.ticker ? next : p) : [...state.positions, next];
+  const positions = state.positions.some((p) => p.ticker === next.ticker)
+    ? state.positions.map((p) => (p.ticker === next.ticker ? next : p))
+    : [...state.positions, next];
   return { ...state, positions };
 }
