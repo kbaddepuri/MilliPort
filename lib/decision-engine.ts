@@ -2,32 +2,14 @@ import type { Quote } from "@/lib/market-data/types";
 import type { Action, PortfolioState } from "@/lib/portfolio-state";
 
 export type Candidate = {
-  ticker: string;
-  name: string;
-  category: string;
-  growth: number;
-  quality: number;
-  catalyst: number;
-  strategicFit: number;
-  asymmetry: number;
-  risk: number;
-  maxPositionPct: number;
-  enabled: boolean;
-  thesis: string;
+  ticker: string; name: string; category: string;
+  growth: number; quality: number; catalyst: number; strategicFit: number; asymmetry: number; risk: number;
+  maxPositionPct: number; enabled: boolean; thesis: string;
 };
 
 export type AgentPick = {
-  ticker: string;
-  name: string;
-  score: number;
-  action: Action;
-  amount: number;
-  price?: number;
-  shares?: number;
-  currentValue: number;
-  rationale: string;
-  thesis: string;
-  rank: number;
+  ticker: string; name: string; score: number; action: Action; amount: number;
+  price?: number; shares?: number; currentValue: number; rationale: string; thesis: string; rank: number;
 };
 
 // M4 is deterministic: the engine can only choose from this explicit strategy universe.
@@ -55,13 +37,7 @@ const roundDollar = (n: number) => Math.floor(Math.max(0, n) / 50) * 50;
 
 export function scoreCandidate(candidate: Candidate): number {
   if (!candidate.enabled) return 0;
-  const raw =
-    candidate.growth * 0.25 +
-    candidate.quality * 0.15 +
-    candidate.catalyst * 0.20 +
-    candidate.strategicFit * 0.20 +
-    candidate.asymmetry * 0.20 -
-    candidate.risk * 0.10;
+  const raw = candidate.growth * 0.25 + candidate.quality * 0.15 + candidate.catalyst * 0.20 + candidate.strategicFit * 0.20 + candidate.asymmetry * 0.20 - candidate.risk * 0.10;
   return Math.max(0, Math.min(100, Math.round(raw)));
 }
 
@@ -70,73 +46,44 @@ function positionValue(state: PortfolioState, ticker: string, quotes: Record<str
   return position && quotes[ticker] ? position.shares * quotes[ticker].price : 0;
 }
 
-export function runDecisionEngine(
-  state: PortfolioState,
-  quotes: Record<string, Quote>,
-): AgentPick[] {
+export function runDecisionEngine(state: PortfolioState, quotes: Record<string, Quote>): AgentPick[] {
   const portfolioValue = state.cash + strategyUniverse.reduce((sum, candidate) => sum + positionValue(state, candidate.ticker, quotes), 0);
   if (portfolioValue <= 0) return [];
 
-  const evaluated = strategyUniverse
-    .filter((candidate) => candidate.enabled)
-    .map((candidate) => {
-      const price = quotes[candidate.ticker]?.price;
-      const currentValue = positionValue(state, candidate.ticker, quotes);
-      const score = scoreCandidate(candidate);
-      const currentPct = currentValue / portfolioValue * 100;
-      return { candidate, price, currentValue, score, currentPct };
-    });
+  const evaluated = strategyUniverse.filter((candidate) => candidate.enabled).map((candidate) => {
+    const price = quotes[candidate.ticker]?.price;
+    const currentValue = positionValue(state, candidate.ticker, quotes);
+    const score = scoreCandidate(candidate);
+    const currentPct = currentValue / portfolioValue * 100;
+    return { candidate, price, currentValue, score, currentPct };
+  });
 
-  // First identify capital that the strategy wants to rotate out of lower-conviction holdings.
+  // Capital rotation: lower-conviction existing positions fund higher-conviction growth ideas.
   const trims = evaluated
-    .filter(({ currentValue, score, currentPct }) => currentValue > 0 && score < 78 && currentPct > 4)
+    .filter(({ currentValue, score, currentPct }) => currentValue > 0 && score < 80 && currentPct > 4)
     .sort((a, b) => a.score - b.score)
     .map(({ candidate, currentValue, score, price, currentPct }) => {
       const amount = roundDollar(Math.min(600, currentValue * 0.35));
-      return {
-        ticker: candidate.ticker,
-        name: candidate.name,
-        score,
-        action: amount > 0 ? "SELL" as const : "HOLD" as const,
-        amount,
-        price,
-        shares: price && amount > 0 ? amount / price : undefined,
-        currentValue,
-        rationale: `${score}/100 strategy score · ${currentPct.toFixed(1)}% portfolio · rotate capital toward higher-conviction growth`,
-        thesis: candidate.thesis,
-        rank: 0,
-      };
+      return { ticker: candidate.ticker, name: candidate.name, score, action: amount > 0 ? "SELL" as const : "HOLD" as const, amount,
+        price, shares: price && amount > 0 ? amount / price : undefined, currentValue,
+        rationale: `${score}/100 strategy score · ${currentPct.toFixed(1)}% portfolio · rotate capital toward higher-conviction growth`, thesis: candidate.thesis, rank: 0 };
     });
 
-  const reallocationBudget = state.cash + trims.reduce((sum, trim) => sum + trim.amount, 0);
-  let remainingBudget = reallocationBudget;
-
+  let remainingBudget = state.cash + trims.reduce((sum, trim) => sum + trim.amount, 0);
   const buys = evaluated
-    .filter(({ score, currentPct, candidate }) => score >= 88 && currentPct < candidate.maxPositionPct && candidate.ticker !== "CRDO")
+    .filter(({ score, currentPct, candidate }) => (score >= 88 || (candidate.ticker === "POET" && score >= 84)) && currentPct < candidate.maxPositionPct && candidate.ticker !== "CRDO")
     .sort((a, b) => b.score - a.score)
     .map(({ candidate, price, currentValue, score, currentPct }) => {
       const capRoom = portfolioValue * candidate.maxPositionPct / 100 - currentValue;
-      const baseAllocation = score >= 95 ? 600 : score >= 91 ? 500 : 400;
+      const baseAllocation = candidate.ticker === "POET" ? 400 : score >= 95 ? 600 : score >= 91 ? 500 : 400;
       const amount = roundDollar(Math.min(baseAllocation, capRoom, remainingBudget));
       remainingBudget -= amount;
-      const action: Action = amount > 0 ? "BUY" : "HOLD";
-      return {
-        ticker: candidate.ticker,
-        name: candidate.name,
-        score,
-        action,
-        amount,
-        price,
-        shares: price && amount > 0 ? amount / price : undefined,
-        currentValue,
-        rationale: `${score}/100 strategy score · ${currentPct.toFixed(1)}% portfolio · ${candidate.category}`,
-        thesis: candidate.thesis,
-        rank: 0,
-      };
+      return { ticker: candidate.ticker, name: candidate.name, score, action: amount > 0 ? "BUY" as const : "HOLD" as const, amount,
+        price, shares: price && amount > 0 ? amount / price : undefined, currentValue,
+        rationale: `${score}/100 strategy score · ${currentPct.toFixed(1)}% portfolio · ${candidate.category}`, thesis: candidate.thesis, rank: 0 };
     });
 
-  // Deliberate risk controls from the current strategy: no fresh CRDO chase after its sharp move,
-  // no additional SNDK/SPCX chase, and VERA stays watch-only until execution risk improves.
+  // Risk controls are explicit, not random exceptions: avoid chasing recent winners and keep VERA catalyst-driven.
   const controls = new Map<string, Partial<AgentPick>>([
     ["CRDO", { action: "WATCH", amount: 0, rationale: "High score, but recent volatility makes this a watchlist entry rather than a chase." }],
     ["SNDK", { action: "HOLD", amount: 0, rationale: "Strong AI-storage thesis, but the position has already rallied sharply." }],
@@ -144,7 +91,7 @@ export function runDecisionEngine(
     ["VERA", { action: "WATCH", amount: 0, rationale: "High-risk biotech position remains catalyst-driven and execution-sensitive." }],
   ]);
 
-  const all = evaluated.map(({ candidate, price, currentValue, score, currentPct }) => {
+  return evaluated.map(({ candidate, price, currentValue, score, currentPct }) => {
     const trim = trims.find((item) => item.ticker === candidate.ticker);
     const buy = buys.find((item) => item.ticker === candidate.ticker);
     const control = controls.get(candidate.ticker);
@@ -152,11 +99,7 @@ export function runDecisionEngine(
     if (trim) return trim;
     if (buy) return buy;
     return { ticker: candidate.ticker, name: candidate.name, score, action: score >= 78 ? "HOLD" as const : "WATCH" as const, amount: 0, price, shares: undefined, currentValue, rationale: `${score}/100 strategy score · ${currentPct.toFixed(1)}% portfolio · no capital move required`, thesis: candidate.thesis, rank: 0 };
-  });
-
-  return all
-    .sort((a, b) => b.score - a.score || (b.amount - a.amount) || a.ticker.localeCompare(b.ticker))
-    .map((pick, index) => ({ ...pick, rank: index + 1 }));
+  }).sort((a, b) => b.score - a.score || b.amount - a.amount || a.ticker.localeCompare(b.ticker)).map((pick, index) => ({ ...pick, rank: index + 1 }));
 }
 
 export function topActionablePicks(picks: AgentPick[], limit = 6): AgentPick[] {
