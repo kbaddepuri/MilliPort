@@ -16,6 +16,7 @@ const money = (n: number) => new Intl.NumberFormat("en-US", { style: "currency",
 const preciseMoney = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(n);
 const sharesText = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 6 });
 const QUOTE_REFRESH_MS = 30_000;
+const QUOTE_REFRESH_SECONDS = QUOTE_REFRESH_MS / 1000;
 
 type HoldingView = {
   ticker: string;
@@ -33,6 +34,9 @@ export default function Home() {
   const [state, setState] = useState<PortfolioState>(() => emptyPortfolioState());
   const [hydrated, setHydrated] = useState(false);
   const [notice, setNotice] = useState("");
+  const [refreshCountdown, setRefreshCountdown] = useState(QUOTE_REFRESH_SECONDS);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   useEffect(() => {
     try {
@@ -51,6 +55,7 @@ export default function Home() {
 
   useEffect(() => {
     let cancelled = false;
+    let refreshInProgress = false;
     const symbols = Array.from(new Set([
       ...portfolio.map((holding) => holding.ticker),
       ...state.positions.map((position) => position.ticker),
@@ -58,6 +63,9 @@ export default function Home() {
     ]));
 
     const refreshQuotes = async () => {
+      if (refreshInProgress) return;
+      refreshInProgress = true;
+      setIsRefreshing(true);
       try {
         const response = await fetch(`/api/quotes?symbols=${encodeURIComponent(symbols.join(","))}`, { cache: "no-store" });
         const data = await response.json();
@@ -69,22 +77,37 @@ export default function Home() {
         }
         setQuotes(Object.fromEntries((data.quotes as Quote[]).map((quote) => [quote.ticker, quote])));
         setMarketState("live");
-        setMessage(`Updated ${new Date(data.fetchedAt).toLocaleTimeString()} · auto-refresh 30s`);
+        setMessage(`Updated ${new Date(data.fetchedAt).toLocaleTimeString()}`);
       } catch {
         if (!cancelled) {
           setMarketState("error");
           setMessage("Could not reach the market-data API.");
         }
+      } finally {
+        if (!cancelled) {
+          setIsRefreshing(false);
+          setRefreshCountdown(QUOTE_REFRESH_SECONDS);
+        }
+        refreshInProgress = false;
       }
     };
 
     refreshQuotes();
-    const intervalId = window.setInterval(refreshQuotes, QUOTE_REFRESH_MS);
+    const countdownId = window.setInterval(() => {
+      setRefreshCountdown((current) => {
+        if (current <= 1) {
+          void refreshQuotes();
+          return QUOTE_REFRESH_SECONDS;
+        }
+        return current - 1;
+      });
+    }, 1000);
+
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
+      window.clearInterval(countdownId);
     };
-  }, [state.positions, state.recommendations]);
+  }, [state.positions, state.recommendations, refreshNonce]);
 
   const pending = state.recommendations.filter((r) => r.status === "PENDING");
   const decided = state.recommendations.filter((r) => r.status !== "PENDING");
@@ -249,7 +272,14 @@ export default function Home() {
   return <main className="shell">
     <header className="topbar">
       <div><div className="brand">Milli<span>Port</span></div><div className="subbrand">Portfolio Decision Engine</div></div>
-      <div className="badge">V4 · M3 APPROVAL</div>
+      <div className="topbar-right">
+        <div className={`refresh-status ${isRefreshing ? "refreshing" : ""}`} aria-live="polite">
+          <span className="refresh-dot">●</span>
+          {isRefreshing ? "Refreshing…" : marketState === "live" ? `LIVE · Refresh in ${refreshCountdown}s` : `Refresh in ${refreshCountdown}s`}
+          <button className="refresh-button" type="button" onClick={() => setRefreshNonce((value) => value + 1)} aria-label="Refresh market data now" title="Refresh market data now">↻</button>
+        </div>
+        <div className="badge">V4 · M3 APPROVAL</div>
+      </div>
     </header>
 
     <section className="hero">
