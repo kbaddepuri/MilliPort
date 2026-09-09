@@ -1,10 +1,12 @@
 export type Action = "BUY" | "HOLD" | "WATCH" | "SELL" | "EXIT";
 export type RecommendationStatus = "PENDING" | "APPROVED" | "REJECTED";
+export type ShareSource = "DERIVED" | "MANUAL";
 
 export type Position = {
   ticker: string;
   shares: number;
   avgCost: number;
+  source: ShareSource;
 };
 
 export type Transaction = {
@@ -36,7 +38,8 @@ export type PortfolioState = {
   recommendations: Recommendation[];
 };
 
-export const STORAGE_KEY = "milliport:m3:portfolio-state";
+// Bump this when the persisted state shape changes during the MVP.
+export const STORAGE_KEY = "milliport:m3:v2:portfolio-state";
 
 export const initialRecommendations: Recommendation[] = [
   { id: "rec-aph-sell-550", ticker: "APH", action: "SELL", amount: 550, thesis: "Excellent business, but trim to fund higher-conviction opportunities.", status: "PENDING", createdAt: "2026-09-09T00:00:00.000Z" },
