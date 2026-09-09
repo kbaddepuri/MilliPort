@@ -19,8 +19,8 @@ export const portfolio: Holding[] = [
   { ticker:"HUBB", name:"Hubbell", value:1553.23, pnl:0, action:"SELL", actionAmount:550, thesis:"Quality power exposure, but capital can be concentrated elsewhere." },
   { ticker:"GOOG", name:"Alphabet", value:1302.79, pnl:0, action:"SELL", actionAmount:600, thesis:"Trim broad mega-cap exposure for the current aggressive mission." },
   { ticker:"POET", name:"POET Technologies", value:845.50, pnl:0, action:"BUY", actionAmount:400, thesis:"Asymmetric optical-interconnect opportunity; high execution risk." },
-  { ticker:"SMCI", name:"Super Micro Computer", value:811.80, pnl:0, action:"BUY", actionAmount:700, thesis:"AI-server demand and operating leverage create upside, with margin risk." },
-  { ticker:"SNDK", name:"SanDisk", value:722.75, pnl:0, action:"BUY", actionAmount:500, thesis:"AI storage and memory-cycle leverage; size additions carefully." },
+  { ticker:"SMCI", name:"Super Micro Computer", value:811.80, pnl:0, action:"HOLD", actionAmount:0, thesis:"AI-server exposure remains interesting, but financing and cash-flow risk argue for patience." },
+  { ticker:"SNDK", name:"SanDisk", value:722.75, pnl:0, action:"HOLD", actionAmount:0, thesis:"Strong AI-storage/memory exposure after a major rally; do not chase." },
   { ticker:"VERA", name:"Vera Therapeutics", value:353.00, pnl:0, action:"WATCH", actionAmount:0, thesis:"Commercial launch creates upside, but cash burn and execution risk remain." },
 ];
 
