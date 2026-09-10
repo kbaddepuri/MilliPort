@@ -19,29 +19,24 @@ type HoldingView = {ticker:string;name:string;snapshotValue:number;action:"BUY"|
 async function emitPortfolioSnapshot(state: PortfolioState, quotes: Record<string,Quote>) {
   const previous = readLocalSnapshots()[0];
   const createdSnapshot = buildPortfolioSnapshot(state, quotes, previous);
-  persistLocalSnapshot(createdSnapshot);
   const createdEvent = snapshotEvent(createdSnapshot);
-  let authoritative = createdSnapshot;
   try {
-    await fetch(`/api/portfolio/${PORTFOLIO_ID}/snapshots`, {
+    const response = await fetch(`/api/portfolio/${PORTFOLIO_ID}/snapshots`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(createdSnapshot),
       keepalive: true,
     });
-    const latestResponse = await fetch(`/api/portfolio/${PORTFOLIO_ID}/snapshots/latest`, { cache: "no-store" });
-    if (latestResponse.ok) {
-      const latestData = await latestResponse.json() as { latest?: typeof createdSnapshot };
-      if (latestData.latest?.snapshot_id === createdSnapshot.snapshot_id) authoritative = latestData.latest;
-    }
+    if (!response.ok) throw new Error("SNAPSHOT_PERSIST_FAILED");
   } catch {
-    // Local snapshot remains authoritative for this browser when the API is unavailable.
+    // The dashboard must not claim a server-authoritative snapshot when persistence fails.
+    throw new Error("PORTFOLIO_SNAPSHOT_UNAVAILABLE");
   }
-  const event = snapshotEvent(authoritative);
-  const analysis = analyzePortfolioRefresh(event, authoritative, previous);
-  persistLocalSnapshot(authoritative);
-  window.dispatchEvent(new CustomEvent("PORTFOLIO_REFRESHED", { detail: { event, snapshot: authoritative, analysis } }));
-  return { snapshot: authoritative, analysis, createdEvent };
+  const event = snapshotEvent(createdSnapshot);
+  const analysis = analyzePortfolioRefresh(event, createdSnapshot, previous);
+  persistLocalSnapshot(createdSnapshot);
+  window.dispatchEvent(new CustomEvent("PORTFOLIO_REFRESHED", { detail: { event, snapshot: createdSnapshot, analysis } }));
+  return { snapshot: createdSnapshot, analysis, createdEvent };
 }
 
 export default function Home() {
@@ -72,8 +67,8 @@ export default function Home() {
         setQuotes(nextQuotes);setMarketState("live");
         const result = await emitPortfolioSnapshot(stateRef.current, nextQuotes);
         const alertText = result.analysis.alerts.length > 0 ? ` Agent alert: ${result.analysis.alerts.join(" ")}` : " Agent: no material portfolio action detected.";
-        setMessage(`Updated ${new Date(data.fetchedAt).toLocaleTimeString()}. Snapshot ${result.snapshot.snapshot_id} created and consumed by the analysis agent.${alertText}`);
-      } catch { if(!cancelled){setMarketState("error");setMessage("Could not reach the market-data API; no new portfolio snapshot was created.");} }
+        setMessage(`Updated ${new Date(data.fetchedAt).toLocaleTimeString()}. Snapshot ${result.snapshot.snapshot_id} persisted and consumed by the analysis agent.${alertText}`);
+      } catch { if(!cancelled){setMarketState("error");setMessage("Could not persist the portfolio snapshot; no server-authoritative refresh was created.");} }
       finally { if(!cancelled){setIsRefreshing(false);setRefreshCountdown(QUOTE_REFRESH_SECONDS);} refreshInProgress=false; }
     };
     if(hydrated) void refreshQuotes();
@@ -119,12 +114,8 @@ export default function Home() {
       {pending.length===0?<div className="empty">No pending recommendations. The portfolio is waiting for the next agent decision.</div>:<div className="approval-list">{pending.map(rec=>{const q=quotes[rec.ticker],p=positionFor(state,rec.ticker),known=portfolio.find(h=>h.ticker===rec.ticker),available=p?.shares??(known&&q?known.value/q.price:undefined);return <div className="approval" key={rec.id}><div><div className="ticker">{rec.ticker}</div><div className="reason">{rec.thesis}</div></div><div className={`action ${rec.action.toLowerCase()}`}>{rec.action} {money(rec.amount)}</div><div className="approval-meta"><span>{q?preciseMoney(q.price):"Price unavailable"}</span>{q&&rec.action!=="HOLD"&&<span>≈ {sharesText(rec.amount/q.price)} shares</span>}{rec.action==="SELL"&&<span>Available: {available!==undefined?sharesText(available):"not available"}</span>}</div><div className="actions"><button className="approve" onClick={()=>approveRecommendation(rec)}>Approve</button><button className="reject" onClick={()=>rejectRecommendation(rec)}>Reject</button></div></div>})}</div>}
     </section>
 
-    <section className="panel" style={{marginTop:18}}><div className="eyebrow">Portfolio state</div><h2>Holdings &amp; share quantities</h2><p className="section-note">AUTO uses MilliPort's known dollar holding and current price. MANUAL lets you enter the exact broker quantity. Manual quantities take precedence.</p><div className="table-wrap"><table className="table"><thead><tr><th>Asset</th><th>Shares</th><th>Price</th><th>Market value</th><th>Avg cost</th><th>Action</th></tr></thead><tbody>{holdingViews.map(h=>{const p=positionFor(state,h.ticker),q=quotes[h.ticker],derived=!p||p.source==="DERIVED"?derivedShares(h.ticker,h.snapshotValue):undefined,shares=effectiveShares(h.ticker,h.snapshotValue),value=q?shares*q.price:h.snapshotValue;return <tr key={h.ticker}><td><div className="ticker">{h.ticker}</div><div className="reason">{h.name}</div></td><td><div className="share-cell"><input className="shares-input" type="number" min="0" step="any" placeholder={derived!==undefined?sharesText(derived):"Auto"} value={p?.source==="MANUAL"?p.shares:""} onChange={e=>setManualShares(h.ticker,e.target.value)}/><span className={`share-source ${p?.source==="MANUAL"?"manual":"derived"}`}>{p?.source==="MANUAL"?"MANUAL":"AUTO"}</span></div>{p?.source==="DERIVED"&&<div className="reason">Approved: {sharesText(p.shares)} shares</div>}</td><td>{q?preciseMoney(q.price):"—"}</td><td>{money(value)}</td><td>{p?.avgCost?preciseMoney(p.avgCost):"—"}</td><td><span className={`action ${h.action.toLowerCase()}`}>{h.action}{h.actionAmount?` ${money(h.actionAmount)}`:""}</span></td></tr>})}</tbody></table></div></section>
+    <section className="panel" style={{marginTop:18}}><div className="eyebrow">Portfolio state</div><h2>Holdings &amp; share quantities</h2><p className="section-note">AUTO uses MilliPort's known dollar holding and current price. MANUAL lets you enter the exact broker quantity. Manual quantities take precedence.</p><div className="table-wrap"><table className="table"><thead><tr><th>Asset</th><th>Shares</th><th>Price</th><th>Market value</th><th>Avg cost</th><th>Action</th></tr></thead><tbody>{holdingViews.map(h=>{const p=positionFor(state,h.ticker),q=quotes[h.ticker],derived=!p||p.source==="DERIVED"?derivedShares(h.ticker,h.snapshotValue):undefined,shares=effectiveShares(h.ticker,h.snapshotValue),value=q?shares*q.price:h.snapshotValue;return <tr key={h.ticker}><td><div className="ticker">{h.ticker}</div><div className="reason">{h.name}</div></td><td><input className="shares-input" aria-label={`${h.ticker} shares`} value={p?.source==="MANUAL"?p.shares:derived??""} onChange={e=>setManualShares(h.ticker,e.target.value)}/><div className="reason">{p?.source==="MANUAL"?"MANUAL":"AUTO"}</div></td><td>{q?preciseMoney(q.price):"—"}</td><td>{preciseMoney(value)}</td><td>{p?.avgCost?preciseMoney(p.avgCost):"—"}</td><td><span className={`action ${h.action.toLowerCase()}`}>{h.action} {h.actionAmount>0?money(h.actionAmount):""}</span></td></tr>})}</tbody></table></div></section>
 
-    <section className="grid" style={{marginTop:18}}><div className="panel metric"><div className="label">Snapshot P&amp;L</div><div className="number">{money(TOTAL_PNL)}</div><div className="reason">Baseline portfolio snapshot</div></div><div className="panel metric"><div className="label">Invested value</div><div className="number">{money(investedValue)}</div><div className="reason">Portfolio value less recorded cash</div></div><div className="panel metric"><div className="label">Agent candidates</div><div className="number">{strategyUniverse.length}</div><div className="reason">Current controlled M4 universe</div></div><div className="panel metric"><div className="label">Decision mode</div><div className="number">MANUAL</div><div className="reason">Human approval required</div></div></section>
-
-    <section className="panel" style={{marginTop:18}}><div className="eyebrow">Audit trail</div><h2>Recent decisions</h2>{decided.length===0?<div className="empty">No decisions recorded yet.</div>:<div>{[...decided].reverse().slice(0,12).map(rec=><div className="history-row" key={rec.id}><span>{new Date(rec.decidedAt??rec.createdAt).toLocaleString()}</span><strong>{rec.ticker}</strong><span>{rec.action} {money(rec.amount)}</span><span>{rec.status}</span></div>)}</div>}</section>
-
-    <footer className="footer"><span>Human approval ON · Auto-approval OFF · Broker execution OFF · Market-data refresh {QUOTE_REFRESH_SECONDS}s · Snapshot event PORTFOLIO_REFRESHED</span><button className="reset" onClick={resetM4}>Reset M4 local state</button></footer>
+    <section className="panel two-col" style={{marginTop:18}}><div><div className="eyebrow">Portfolio economics</div><h2>Target tracking</h2><div className="stat-row"><span>Current</span><strong>{preciseMoney(portfolioValue)}</strong></div><div className="stat-row"><span>Invested</span><strong>{preciseMoney(investedValue)}</strong></div><div className="stat-row"><span>Cash</span><strong>{preciseMoney(state.cash)}</strong></div><div className="stat-row"><span>Gap to $30K</span><strong>{preciseMoney(gap)}</strong></div><div className="stat-row"><span>Recorded M4 P&amp;L</span><strong>{preciseMoney(TOTAL_PNL)}</strong></div></div><div><div className="eyebrow">Decision history</div><h2>Resolved recommendations</h2>{decided.length===0?<div className="empty">No decisions recorded yet.</div>:<div className="history">{decided.slice().reverse().map(r=><div className="history-row" key={r.id}><span>{r.ticker} · {r.action}</span><span>{money(r.amount)} · {r.status}</span></div>)}</div>}<button className="reset" type="button" onClick={resetM4}>Reset local M4 state</button></div></section>
   </main>;
 }
