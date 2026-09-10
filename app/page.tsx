@@ -3,8 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { portfolio, TARGET_VALUE, TOTAL_PNL } from "@/lib/portfolio";
 import type { Quote } from "@/lib/market-data/types";
-import { runDecisionEngine, topActionablePicks, strategyUniverse, type AgentPick } from "@/lib/decision-engine";
+import { runDecisionEngine, topActionablePicks, strategyUniverse } from "@/lib/decision-engine";
 import { emptyPortfolioState, positionFor, STORAGE_KEY, upsertPosition, type PortfolioState, type Recommendation } from "@/lib/portfolio-state";
+import { analyzePortfolioRefresh } from "@/lib/portfolio-analysis-agent";
+import { buildPortfolioSnapshot, persistLocalSnapshot, readLocalSnapshots, snapshotEvent, PORTFOLIO_ID } from "@/lib/portfolio-snapshot";
 
 const money = (n:number) => new Intl.NumberFormat("en-US", {style:"currency",currency:"USD",maximumFractionDigits:0}).format(n);
 const preciseMoney = (n:number) => new Intl.NumberFormat("en-US", {style:"currency",currency:"USD",maximumFractionDigits:2}).format(n);
@@ -13,6 +15,26 @@ const QUOTE_REFRESH_MS = 30_000;
 const QUOTE_REFRESH_SECONDS = QUOTE_REFRESH_MS / 1000;
 
 type HoldingView = {ticker:string;name:string;snapshotValue:number;action:"BUY"|"HOLD"|"WATCH"|"SELL"|"EXIT";actionAmount:number;thesis:string};
+
+aSync function emitPortfolioSnapshot(state: PortfolioState, quotes: Record<string,Quote>) {
+  const previous = readLocalSnapshots()[0];
+  const snapshot = buildPortfolioSnapshot(state, quotes, previous);
+  persistLocalSnapshot(snapshot);
+  const event = snapshotEvent(snapshot);
+  try {
+    await fetch(`/api/portfolio/${PORTFOLIO_ID}/snapshots`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(snapshot),
+      keepalive: true,
+    });
+  } catch {
+    // Local snapshot remains authoritative for this browser when the API is unavailable.
+  }
+  const analysis = analyzePortfolioRefresh(event, snapshot, previous);
+  window.dispatchEvent(new CustomEvent("PORTFOLIO_REFRESHED", { detail: { event, snapshot, analysis } }));
+  return { snapshot, analysis };
+}
 
 export default function Home() {
   const [quotes,setQuotes] = useState<Record<string,Quote>>({});
@@ -34,23 +56,25 @@ export default function Home() {
     const refreshQuotes=async()=>{
       if(refreshInProgress) return; refreshInProgress=true; setIsRefreshing(true);
       try { const response=await fetch(`/api/quotes?symbols=${encodeURIComponent(symbols.join(","))}`,{cache:"no-store"}); const data=await response.json(); if(cancelled)return;
-        if(!response.ok){setMarketState(data.error==="MARKET_DATA_NOT_CONFIGURED"?"unconfigured":"error");setMessage(data.message??"Market data unavailable.");return;}
-        setQuotes(Object.fromEntries((data.quotes as Quote[]).map(q=>[q.ticker,q])));setMarketState("live");setMessage(`Updated ${new Date(data.fetchedAt).toLocaleTimeString()}`);
-      } catch { if(!cancelled){setMarketState("error");setMessage("Could not reach the market-data API.");} }
+        if(!response.ok){setMarketState(data.error==="MARKET_DATA_NOT_CONFIGURED"?"unconfigured":"error");setMessage(data.message??"Market data unavailable; no new portfolio snapshot was created.");return;}
+        const nextQuotes=Object.fromEntries((data.quotes as Quote[]).map(q=>[q.ticker,q]));
+        setQuotes(nextQuotes);setMarketState("live");setMessage(`Updated ${new Date(data.fetchedAt).toLocaleTimeString()}`);
+        const result = await emitPortfolioSnapshot(state, nextQuotes);
+        const alertText = result.analysis.alerts.length > 0 ? ` Agent alert: ${result.analysis.alerts.join(" ")}` : " Agent: no material portfolio action detected.";
+        setMessage(`Updated ${new Date(data.fetchedAt).toLocaleTimeString()}. Snapshot ${result.snapshot.snapshot_id} created.${alertText}`);
+      } catch { if(!cancelled){setMarketState("error");setMessage("Could not reach the market-data API; no new portfolio snapshot was created.");} }
       finally { if(!cancelled){setIsRefreshing(false);setRefreshCountdown(QUOTE_REFRESH_SECONDS);} refreshInProgress=false; }
     };
-    refreshQuotes();
+    if(hydrated) void refreshQuotes();
     const id=window.setInterval(()=>setRefreshCountdown(current=>{if(current<=1){void refreshQuotes();return QUOTE_REFRESH_SECONDS;}return current-1;}),1000);
     return()=>{cancelled=true;window.clearInterval(id);};
-  },[state.positions,state.recommendations,refreshNonce]);
+  },[state.positions,state.recommendations,state.cash,refreshNonce,hydrated]);
 
   const agentPicks=useMemo(()=>runDecisionEngine(state,quotes),[state,quotes]);
   const actionablePicks=useMemo(()=>topActionablePicks(agentPicks,6),[agentPicks]);
   const pending=state.recommendations.filter(r=>r.status==="PENDING");
   const decided=state.recommendations.filter(r=>r.status!=="PENDING");
 
-  // The agent owns recommendation creation; the human only approves or rejects.
-  // This keeps one visible approval queue instead of a separate "queue for approval" list.
   useEffect(() => {
     if(!hydrated || actionablePicks.length===0) return;
     const additions:Recommendation[]=[];
@@ -90,6 +114,6 @@ export default function Home() {
 
     <section className="panel" style={{marginTop:18}}><div className="eyebrow">Audit trail</div><h2>Recent decisions</h2>{decided.length===0?<div className="empty">No decisions recorded yet.</div>:<div>{[...decided].reverse().slice(0,12).map(rec=><div className="history-row" key={rec.id}><span>{new Date(rec.decidedAt??rec.createdAt).toLocaleString()}</span><strong>{rec.ticker}</strong><span>{rec.action} {money(rec.amount)}</span><span>{rec.status}</span></div>)}</div>}</section>
 
-    <footer className="footer"><span>Human approval ON · Auto-approval OFF · Broker execution OFF · Market-data refresh {QUOTE_REFRESH_SECONDS}s</span><button className="reset" onClick={resetM4}>Reset M4 local state</button></footer>
+    <footer className="footer"><span>Human approval ON · Auto-approval OFF · Broker execution OFF · Market-data refresh {QUOTE_REFRESH_SECONDS}s · Snapshot event PORTFOLIO_REFRESHED</span><button className="reset" onClick={resetM4}>Reset M4 local state</button></footer>
   </main>;
 }
