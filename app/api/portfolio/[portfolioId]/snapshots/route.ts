@@ -11,6 +11,14 @@ const globalStore = globalThis as typeof globalThis & {
 const store = globalStore.__milliportSnapshots ?? new Map<string, PortfolioSnapshot[]>();
 globalStore.__milliportSnapshots = store;
 
+export function getServerSnapshots(portfolioId: string): PortfolioSnapshot[] {
+  return (store.get(portfolioId) ?? []).slice(0, 100);
+}
+
+export function getLatestServerSnapshot(portfolioId: string): PortfolioSnapshot | null {
+  return getServerSnapshots(portfolioId)[0] ?? null;
+}
+
 export async function GET(
   request: Request,
   context: { params: Promise<{ portfolioId: string }> },
@@ -18,7 +26,7 @@ export async function GET(
   const { portfolioId } = await context.params;
   const url = new URL(request.url);
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 30) || 30, 1), 100);
-  const snapshots = (store.get(portfolioId) ?? []).slice(0, limit);
+  const snapshots = getServerSnapshots(portfolioId).slice(0, limit);
   return NextResponse.json({ ok: true, portfolio_id: portfolioId, snapshots, latest: snapshots[0] ?? null }, { headers: { "Cache-Control": "no-store" } });
 }
 
