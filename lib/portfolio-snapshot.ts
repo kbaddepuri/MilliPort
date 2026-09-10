@@ -82,6 +82,10 @@ export function buildPortfolioSnapshot(
 ): PortfolioSnapshot {
   const timestamp = new Date().toISOString();
   const previousByTicker = new Map((previous?.positions ?? []).map((p) => [p.ticker, p]));
+  const quotesComplete = state.positions.every((position) => {
+    const quote = quotes[position.ticker];
+    return Boolean(quote && quote.price > 0);
+  });
   const holdings = state.positions.map((position) => {
     const quote = quotes[position.ticker];
     const known = portfolio.find((h) => h.ticker === position.ticker);
@@ -132,7 +136,7 @@ export function buildPortfolioSnapshot(
     },
     positions: holdings,
     status: {
-      market_data_status: Object.keys(quotes).length > 0 ? "success" : "unavailable",
+      market_data_status: quotesComplete ? "success" : "stale",
       portfolio_data_status: "success",
       fundamental_data_status: "not_configured",
       news_data_status: "not_configured",
