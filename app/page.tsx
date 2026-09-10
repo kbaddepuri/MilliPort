@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { portfolio, TARGET_VALUE, TOTAL_PNL } from "@/lib/portfolio";
 import type { Quote } from "@/lib/market-data/types";
-import { runDecisionEngine, topActionablePicks, strategyUniverse, type AgentPick } from "@/lib/decision-engine";
+import { runDecisionEngine, topActionablePicks, strategyUniverse } from "@/lib/decision-engine";
 import { emptyPortfolioState, positionFor, STORAGE_KEY, upsertPosition, type PortfolioState, type Recommendation } from "@/lib/portfolio-state";
+import { analyzePortfolioRefresh } from "@/lib/portfolio-analysis-agent";
+import { buildPortfolioSnapshot, persistLocalSnapshot, readLocalSnapshots, snapshotEvent, PORTFOLIO_ID } from "@/lib/portfolio-snapshot";
 
 const money = (n:number) => new Intl.NumberFormat("en-US", {style:"currency",currency:"USD",maximumFractionDigits:0}).format(n);
 const preciseMoney = (n:number) => new Intl.NumberFormat("en-US", {style:"currency",currency:"USD",maximumFractionDigits:2}).format(n);
@@ -14,43 +16,76 @@ const QUOTE_REFRESH_SECONDS = QUOTE_REFRESH_MS / 1000;
 
 type HoldingView = {ticker:string;name:string;snapshotValue:number;action:"BUY"|"HOLD"|"WATCH"|"SELL"|"EXIT";actionAmount:number;thesis:string};
 
+async function emitPortfolioSnapshot(state: PortfolioState, quotes: Record<string,Quote>) {
+  const previous = readLocalSnapshots()[0];
+  const createdSnapshot = buildPortfolioSnapshot(state, quotes, previous);
+  persistLocalSnapshot(createdSnapshot);
+  const createdEvent = snapshotEvent(createdSnapshot);
+  let authoritative = createdSnapshot;
+  try {
+    await fetch(`/api/portfolio/${PORTFOLIO_ID}/snapshots`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(createdSnapshot),
+      keepalive: true,
+    });
+    const latestResponse = await fetch(`/api/portfolio/${PORTFOLIO_ID}/snapshots/latest`, { cache: "no-store" });
+    if (latestResponse.ok) {
+      const latestData = await latestResponse.json() as { latest?: typeof createdSnapshot };
+      if (latestData.latest?.snapshot_id === createdSnapshot.snapshot_id) authoritative = latestData.latest;
+    }
+  } catch {
+    // Local snapshot remains authoritative for this browser when the API is unavailable.
+  }
+  const event = snapshotEvent(authoritative);
+  const analysis = analyzePortfolioRefresh(event, authoritative, previous);
+  persistLocalSnapshot(authoritative);
+  window.dispatchEvent(new CustomEvent("PORTFOLIO_REFRESHED", { detail: { event, snapshot: authoritative, analysis } }));
+  return { snapshot: authoritative, analysis, createdEvent };
+}
+
 export default function Home() {
   const [quotes,setQuotes] = useState<Record<string,Quote>>({});
   const [marketState,setMarketState] = useState<"loading"|"live"|"unconfigured"|"error">("loading");
   const [message,setMessage] = useState("");
   const [state,setState] = useState<PortfolioState>(() => emptyPortfolioState());
+  const stateRef = useRef<PortfolioState>(state);
   const [hydrated,setHydrated] = useState(false);
   const [notice,setNotice] = useState("");
   const [refreshCountdown,setRefreshCountdown] = useState(QUOTE_REFRESH_SECONDS);
   const [isRefreshing,setIsRefreshing] = useState(false);
   const [refreshNonce,setRefreshNonce] = useState(0);
 
+  useEffect(() => { stateRef.current = state; }, [state]);
   useEffect(() => { try { const saved = window.localStorage.getItem(STORAGE_KEY); if(saved) setState(JSON.parse(saved) as PortfolioState); } catch { setNotice("Saved portfolio state could not be read; using a fresh M4 state."); } finally { setHydrated(true); } }, []);
   useEffect(() => { if(hydrated) window.localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); },[state,hydrated]);
 
   useEffect(() => {
     let cancelled=false, refreshInProgress=false;
-    const symbols=Array.from(new Set([...strategyUniverse.map(c=>c.ticker),...portfolio.map(h=>h.ticker),...state.positions.map(p=>p.ticker),...state.recommendations.filter(r=>r.status==="PENDING").map(r=>r.ticker)]));
     const refreshQuotes=async()=>{
       if(refreshInProgress) return; refreshInProgress=true; setIsRefreshing(true);
+      const currentState = stateRef.current;
+      const symbols=Array.from(new Set([...strategyUniverse.map(c=>c.ticker),...portfolio.map(h=>h.ticker),...currentState.positions.map(p=>p.ticker),...currentState.recommendations.filter(r=>r.status==="PENDING").map(r=>r.ticker)]));
       try { const response=await fetch(`/api/quotes?symbols=${encodeURIComponent(symbols.join(","))}`,{cache:"no-store"}); const data=await response.json(); if(cancelled)return;
-        if(!response.ok){setMarketState(data.error==="MARKET_DATA_NOT_CONFIGURED"?"unconfigured":"error");setMessage(data.message??"Market data unavailable.");return;}
-        setQuotes(Object.fromEntries((data.quotes as Quote[]).map(q=>[q.ticker,q])));setMarketState("live");setMessage(`Updated ${new Date(data.fetchedAt).toLocaleTimeString()}`);
-      } catch { if(!cancelled){setMarketState("error");setMessage("Could not reach the market-data API.");} }
+        if(!response.ok){setMarketState(data.error==="MARKET_DATA_NOT_CONFIGURED"?"unconfigured":"error");setMessage(data.message??"Market data unavailable; no new portfolio snapshot was created.");return;}
+        const nextQuotes=Object.fromEntries((data.quotes as Quote[]).map(q=>[q.ticker,q]));
+        setQuotes(nextQuotes);setMarketState("live");
+        const result = await emitPortfolioSnapshot(stateRef.current, nextQuotes);
+        const alertText = result.analysis.alerts.length > 0 ? ` Agent alert: ${result.analysis.alerts.join(" ")}` : " Agent: no material portfolio action detected.";
+        setMessage(`Updated ${new Date(data.fetchedAt).toLocaleTimeString()}. Snapshot ${result.snapshot.snapshot_id} created and consumed by the analysis agent.${alertText}`);
+      } catch { if(!cancelled){setMarketState("error");setMessage("Could not reach the market-data API; no new portfolio snapshot was created.");} }
       finally { if(!cancelled){setIsRefreshing(false);setRefreshCountdown(QUOTE_REFRESH_SECONDS);} refreshInProgress=false; }
     };
-    refreshQuotes();
+    if(hydrated) void refreshQuotes();
     const id=window.setInterval(()=>setRefreshCountdown(current=>{if(current<=1){void refreshQuotes();return QUOTE_REFRESH_SECONDS;}return current-1;}),1000);
     return()=>{cancelled=true;window.clearInterval(id);};
-  },[state.positions,state.recommendations,refreshNonce]);
+  },[refreshNonce,hydrated]);
 
   const agentPicks=useMemo(()=>runDecisionEngine(state,quotes),[state,quotes]);
   const actionablePicks=useMemo(()=>topActionablePicks(agentPicks,6),[agentPicks]);
   const pending=state.recommendations.filter(r=>r.status==="PENDING");
   const decided=state.recommendations.filter(r=>r.status!=="PENDING");
 
-  // The agent owns recommendation creation; the human only approves or rejects.
-  // This keeps one visible approval queue instead of a separate "queue for approval" list.
   useEffect(() => {
     if(!hydrated || actionablePicks.length===0) return;
     const additions:Recommendation[]=[];
@@ -90,6 +125,6 @@ export default function Home() {
 
     <section className="panel" style={{marginTop:18}}><div className="eyebrow">Audit trail</div><h2>Recent decisions</h2>{decided.length===0?<div className="empty">No decisions recorded yet.</div>:<div>{[...decided].reverse().slice(0,12).map(rec=><div className="history-row" key={rec.id}><span>{new Date(rec.decidedAt??rec.createdAt).toLocaleString()}</span><strong>{rec.ticker}</strong><span>{rec.action} {money(rec.amount)}</span><span>{rec.status}</span></div>)}</div>}</section>
 
-    <footer className="footer"><span>Human approval ON · Auto-approval OFF · Broker execution OFF · Market-data refresh {QUOTE_REFRESH_SECONDS}s</span><button className="reset" onClick={resetM4}>Reset M4 local state</button></footer>
+    <footer className="footer"><span>Human approval ON · Auto-approval OFF · Broker execution OFF · Market-data refresh {QUOTE_REFRESH_SECONDS}s · Snapshot event PORTFOLIO_REFRESHED</span><button className="reset" onClick={resetM4}>Reset M4 local state</button></footer>
   </main>;
 }
