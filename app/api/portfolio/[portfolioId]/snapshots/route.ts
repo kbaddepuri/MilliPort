@@ -1,23 +1,8 @@
 import { NextResponse } from "next/server";
 import type { PortfolioSnapshot } from "@/lib/portfolio-snapshot";
+import { getServerSnapshots, saveServerSnapshot } from "@/lib/portfolio-snapshot-server";
 
 export const dynamic = "force-dynamic";
-
-// M4.1 MVP store. The client also keeps a durable local history. Replace this
-// adapter with Supabase/Postgres before multi-instance production deployment.
-const globalStore = globalThis as typeof globalThis & {
-  __milliportSnapshots?: Map<string, PortfolioSnapshot[]>;
-};
-const store = globalStore.__milliportSnapshots ?? new Map<string, PortfolioSnapshot[]>();
-globalStore.__milliportSnapshots = store;
-
-export function getServerSnapshots(portfolioId: string): PortfolioSnapshot[] {
-  return (store.get(portfolioId) ?? []).slice(0, 100);
-}
-
-export function getLatestServerSnapshot(portfolioId: string): PortfolioSnapshot | null {
-  return getServerSnapshots(portfolioId)[0] ?? null;
-}
 
 export async function GET(
   request: Request,
@@ -40,9 +25,7 @@ export async function POST(
     if (snapshot.portfolio_id !== portfolioId || !snapshot.snapshot_id || !snapshot.timestamp) {
       return NextResponse.json({ ok: false, error: "INVALID_SNAPSHOT" }, { status: 400 });
     }
-    const existing = store.get(portfolioId) ?? [];
-    const next = [snapshot, ...existing.filter((item) => item.snapshot_id !== snapshot.snapshot_id)].slice(0, 100);
-    store.set(portfolioId, next);
+    saveServerSnapshot(snapshot);
     return NextResponse.json({ ok: true, snapshot, event: "PORTFOLIO_REFRESHED" }, { headers: { "Cache-Control": "no-store" } });
   } catch {
     return NextResponse.json({ ok: false, error: "INVALID_JSON" }, { status: 400 });
