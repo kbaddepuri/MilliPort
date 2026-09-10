@@ -1,5 +1,5 @@
 import type { PortfolioRefreshedEvent, PortfolioSnapshot } from "@/lib/portfolio-snapshot";
-import { INITIAL_PORTFOLIO_BASELINE_USD, TARGET_VALUE } from "@/lib/portfolio-snapshot";
+import { INITIAL_PORTFOLIO_BASELINE_USD } from "@/lib/portfolio-snapshot";
 
 export type PortfolioAnalysis = {
   snapshot_id: string;
@@ -48,11 +48,9 @@ export function analyzePortfolioRefresh(
     previous_value_usd: snapshot.portfolio.previous_value_usd,
     change_usd: snapshot.portfolio.change_usd,
     change_pct: snapshot.portfolio.change_pct,
-    target_value_usd: TARGET_VALUE,
-    target_gap_usd: Math.max(0, TARGET_VALUE - snapshot.portfolio.total_value_usd),
-    required_gain_pct: snapshot.portfolio.total_value_usd > 0
-      ? (Math.max(0, TARGET_VALUE - snapshot.portfolio.total_value_usd) / snapshot.portfolio.total_value_usd) * 100
-      : 0,
+    target_value_usd: snapshot.target.target_value_usd,
+    target_gap_usd: snapshot.target.dollar_gap_usd,
+    required_gain_pct: snapshot.target.required_gain_pct,
     initial_baseline_usd: INITIAL_PORTFOLIO_BASELINE_USD,
     change_since_baseline_usd: snapshot.portfolio.total_value_usd - INITIAL_PORTFOLIO_BASELINE_USD,
     material: alerts.length > 0,
