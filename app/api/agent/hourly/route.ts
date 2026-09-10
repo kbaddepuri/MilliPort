@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { runDecisionEngine, topActionablePicks, strategyUniverse } from "@/lib/decision-engine";
 import { analyzePortfolioRefresh } from "@/lib/portfolio-analysis-agent";
 import { PORTFOLIO_ID, snapshotEvent, type PortfolioSnapshot } from "@/lib/portfolio-snapshot";
-import { getServerSnapshots, getLatestServerSnapshot } from "@/app/api/portfolio/[portfolioId]/snapshots/route";
+import { getServerSnapshots, getLatestServerSnapshot } from "@/lib/portfolio-snapshot-server";
 import { createMarketDataProvider } from "@/lib/market-data/finnhub";
 import type { PortfolioState } from "@/lib/portfolio-state";
 import type { Quote } from "@/lib/market-data/types";
