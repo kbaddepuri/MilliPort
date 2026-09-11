@@ -36,7 +36,15 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: "UNAUTHORIZED" }, { status: 401 });
   }
 
-  const latest = getLatestServerSnapshot(PORTFOLIO_ID);
+  let latest: PortfolioSnapshot | null;
+  let history: PortfolioSnapshot[];
+  try {
+    latest = await getLatestServerSnapshot(PORTFOLIO_ID);
+    history = await getServerSnapshots(PORTFOLIO_ID, 100);
+  } catch (error) {
+    return NextResponse.json({ ok: false, error: "SNAPSHOT_STORE_UNAVAILABLE", message: error instanceof Error ? error.message : "Snapshot store unavailable." }, { status: 503 });
+  }
+
   if (!latest) {
     return NextResponse.json({ ok: false, error: "NO_PORTFOLIO_SNAPSHOT", message: "The hourly agent requires a successful MilliPort portfolio refresh first." }, { status: 409 });
   }
@@ -50,7 +58,6 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: "SNAPSHOT_STALE", snapshot_id: latest.snapshot_id, timestamp: latest.timestamp, max_age_ms: MAX_SNAPSHOT_AGE_MS }, { status: 409 });
   }
 
-  const history = getServerSnapshots(PORTFOLIO_ID);
   const previous = history.find((snapshot) => snapshot.snapshot_id !== latest.snapshot_id);
   const provider = createMarketDataProvider();
   if (!provider) {
@@ -81,6 +88,8 @@ export async function GET(request: Request) {
       timestamp: latest.timestamp,
     },
     previous_snapshot_id: previous?.snapshot_id ?? null,
+    portfolio: latest.portfolio,
+    target: latest.target,
     analysis,
     recommendations: actionable,
     market_data: { provider: marketData.provider, fetched_at: marketData.fetchedAt, quote_count: marketData.quotes.length },

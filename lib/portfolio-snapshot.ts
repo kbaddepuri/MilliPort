@@ -21,6 +21,7 @@ export type PortfolioSnapshotPosition = {
   allocation_usd: number;
   previous_snapshot_market_value_usd?: number;
   previous_snapshot_price_usd?: number;
+  previous_snapshot_quantity?: number;
   previous_snapshot_allocation_usd?: number;
   sector?: string;
   asset_type?: string;
@@ -107,6 +108,7 @@ export function buildPortfolioSnapshot(
       allocation_usd: marketValue,
       previous_snapshot_market_value_usd: previousPosition?.market_value_usd,
       previous_snapshot_price_usd: previousPosition?.price_usd,
+      previous_snapshot_quantity: previousPosition?.quantity,
       previous_snapshot_allocation_usd: previousPosition?.allocation_usd,
       asset_type: "equity",
       currency: quote?.currency ?? "USD",

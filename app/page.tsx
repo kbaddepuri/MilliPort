@@ -19,29 +19,23 @@ type HoldingView = {ticker:string;name:string;snapshotValue:number;action:"BUY"|
 async function emitPortfolioSnapshot(state: PortfolioState, quotes: Record<string,Quote>) {
   const previous = readLocalSnapshots()[0];
   const createdSnapshot = buildPortfolioSnapshot(state, quotes, previous);
-  persistLocalSnapshot(createdSnapshot);
   const createdEvent = snapshotEvent(createdSnapshot);
-  let authoritative = createdSnapshot;
   try {
-    await fetch(`/api/portfolio/${PORTFOLIO_ID}/snapshots`, {
+    const response = await fetch(`/api/portfolio/${PORTFOLIO_ID}/snapshots`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(createdSnapshot),
       keepalive: true,
     });
-    const latestResponse = await fetch(`/api/portfolio/${PORTFOLIO_ID}/snapshots/latest`, { cache: "no-store" });
-    if (latestResponse.ok) {
-      const latestData = await latestResponse.json() as { latest?: typeof createdSnapshot };
-      if (latestData.latest?.snapshot_id === createdSnapshot.snapshot_id) authoritative = latestData.latest;
-    }
+    if (!response.ok) throw new Error("SNAPSHOT_PERSIST_FAILED");
   } catch {
-    // Local snapshot remains authoritative for this browser when the API is unavailable.
+    throw new Error("PORTFOLIO_SNAPSHOT_UNAVAILABLE");
   }
-  const event = snapshotEvent(authoritative);
-  const analysis = analyzePortfolioRefresh(event, authoritative, previous);
-  persistLocalSnapshot(authoritative);
-  window.dispatchEvent(new CustomEvent("PORTFOLIO_REFRESHED", { detail: { event, snapshot: authoritative, analysis } }));
-  return { snapshot: authoritative, analysis, createdEvent };
+  const event = snapshotEvent(createdSnapshot);
+  const analysis = analyzePortfolioRefresh(event, createdSnapshot, previous);
+  persistLocalSnapshot(createdSnapshot);
+  window.dispatchEvent(new CustomEvent("PORTFOLIO_REFRESHED", { detail: { event, snapshot: createdSnapshot, analysis } }));
+  return { snapshot: createdSnapshot, analysis, createdEvent };
 }
 
 export default function Home() {
@@ -73,7 +67,7 @@ export default function Home() {
         const result = await emitPortfolioSnapshot(stateRef.current, nextQuotes);
         const alertText = result.analysis.alerts.length > 0 ? ` Agent alert: ${result.analysis.alerts.join(" ")}` : " Agent: no material portfolio action detected.";
         setMessage(`Updated ${new Date(data.fetchedAt).toLocaleTimeString()}. Snapshot ${result.snapshot.snapshot_id} created and consumed by the analysis agent.${alertText}`);
-      } catch { if(!cancelled){setMarketState("error");setMessage("Could not reach the market-data API; no new portfolio snapshot was created.");} }
+      } catch { if(!cancelled){setMarketState("error");setMessage("Could not persist the portfolio snapshot; no server-authoritative refresh was created.");} }
       finally { if(!cancelled){setIsRefreshing(false);setRefreshCountdown(QUOTE_REFRESH_SECONDS);} refreshInProgress=false; }
     };
     if(hydrated) void refreshQuotes();
