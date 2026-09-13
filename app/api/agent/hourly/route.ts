@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
-import { runDecisionEngine, topActionablePicks, strategyUniverse } from "@/lib/decision-engine";
-import { analyzePortfolioRefresh } from "@/lib/portfolio-analysis-agent";
-import { PORTFOLIO_ID, snapshotEvent, type PortfolioSnapshot } from "@/lib/portfolio-snapshot";
+import { strategyUniverse } from "@/lib/decision-engine";
+import { analyzeAuthoritativePortfolio } from "@/lib/authoritative-portfolio-agent";
+import { PORTFOLIO_ID, type PortfolioSnapshot } from "@/lib/portfolio-snapshot";
 import { getServerSnapshots, getLatestServerSnapshot } from "@/lib/portfolio-snapshot-server";
 import { createMarketDataProvider } from "@/lib/market-data/finnhub";
-import type { PortfolioState } from "@/lib/portfolio-state";
 import type { Quote } from "@/lib/market-data/types";
 
 export const dynamic = "force-dynamic";
@@ -17,20 +16,6 @@ function unauthorized(request: Request): boolean {
   return request.headers.get("authorization") !== `Bearer ${expected}`;
 }
 
-function stateFromSnapshot(snapshot: PortfolioSnapshot): PortfolioState {
-  return {
-    cash: snapshot.portfolio.cash_usd,
-    positions: snapshot.positions.map((position) => ({
-      ticker: position.ticker,
-      shares: position.quantity,
-      avgCost: position.average_cost_usd,
-      source: "MANUAL",
-    })),
-    transactions: [],
-    recommendations: [],
-  };
-}
-
 export async function GET(request: Request) {
   if (unauthorized(request)) {
     return NextResponse.json({ ok: false, error: "UNAUTHORIZED" }, { status: 401 });
@@ -39,6 +24,7 @@ export async function GET(request: Request) {
   let latest: PortfolioSnapshot | null;
   let history: PortfolioSnapshot[];
   try {
+    // Supabase-backed latest snapshot is the authoritative portfolio state.
     latest = await getLatestServerSnapshot(PORTFOLIO_ID);
     history = await getServerSnapshots(PORTFOLIO_ID, 100);
   } catch (error) {
@@ -46,7 +32,7 @@ export async function GET(request: Request) {
   }
 
   if (!latest) {
-    return NextResponse.json({ ok: false, error: "NO_PORTFOLIO_SNAPSHOT", message: "The hourly agent requires a successful MilliPort portfolio refresh first." }, { status: 409 });
+    return NextResponse.json({ ok: false, error: "NO_PORTFOLIO_SNAPSHOT", message: "The portfolio analysis agent requires a successful MilliPort portfolio refresh first." }, { status: 409 });
   }
 
   if (latest.status.market_data_status !== "success" || latest.status.portfolio_data_status !== "success") {
@@ -73,26 +59,15 @@ export async function GET(request: Request) {
   }
 
   const quotes: Record<string, Quote> = Object.fromEntries(marketData.quotes.map((quote) => [quote.ticker, quote]));
-  const state = stateFromSnapshot(latest);
-  const event = snapshotEvent(latest);
-  const analysis = analyzePortfolioRefresh(event, latest, previous);
-  const picks = runDecisionEngine(state, quotes);
-  const actionable = topActionablePicks(picks, 6).filter((pick) => pick.action === "BUY" || pick.action === "SELL");
 
-  return NextResponse.json({
-    ok: true,
-    agent: "hourly-portfolio-analysis",
-    source_of_truth: {
-      portfolio_id: latest.portfolio_id,
-      snapshot_id: latest.snapshot_id,
-      timestamp: latest.timestamp,
-    },
-    previous_snapshot_id: previous?.snapshot_id ?? null,
-    portfolio: latest.portfolio,
-    target: latest.target,
-    analysis,
-    recommendations: actionable,
-    market_data: { provider: marketData.provider, fetched_at: marketData.fetchedAt, quote_count: marketData.quotes.length },
-    policy: { human_approval_required: true, auto_approval: false, broker_execution: false },
-  }, { headers: { "Cache-Control": "no-store" } });
+  try {
+    const analysis = analyzeAuthoritativePortfolio(latest, previous, quotes);
+    return NextResponse.json({
+      ok: true,
+      ...analysis,
+      market_data: { provider: marketData.provider, fetched_at: marketData.fetchedAt, quote_count: marketData.quotes.length },
+    }, { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    return NextResponse.json({ ok: false, error: "PORTFOLIO_ANALYSIS_FAILED", snapshot_id: latest.snapshot_id, message: error instanceof Error ? error.message : "Portfolio analysis failed." }, { status: 500 });
+  }
 }
