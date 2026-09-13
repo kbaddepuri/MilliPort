@@ -3,6 +3,7 @@ import { strategyUniverse } from "@/lib/decision-engine";
 import { analyzeAuthoritativePortfolio } from "@/lib/authoritative-portfolio-agent";
 import { PORTFOLIO_ID, type PortfolioSnapshot } from "@/lib/portfolio-snapshot";
 import { getServerSnapshots, getLatestServerSnapshot } from "@/lib/portfolio-snapshot-server";
+import { savePortfolioAnalysis } from "@/lib/portfolio-analysis-db";
 import { createMarketDataProvider } from "@/lib/market-data/finnhub";
 import type { Quote } from "@/lib/market-data/types";
 
@@ -24,7 +25,6 @@ export async function GET(request: Request) {
   let latest: PortfolioSnapshot | null;
   let history: PortfolioSnapshot[];
   try {
-    // Supabase-backed latest snapshot is the authoritative portfolio state.
     latest = await getLatestServerSnapshot(PORTFOLIO_ID);
     history = await getServerSnapshots(PORTFOLIO_ID, 100);
   } catch (error) {
@@ -62,6 +62,7 @@ export async function GET(request: Request) {
 
   try {
     const analysis = analyzeAuthoritativePortfolio(latest, previous, quotes);
+    await savePortfolioAnalysis(analysis);
     return NextResponse.json({
       ok: true,
       ...analysis,
