@@ -55,7 +55,7 @@ export default function Home() {
     let cancelled = false;
     (async () => {
       try {
-        const response = await fetch(`/api/portfolio/${PORTFOLIO_ID}/snapshots/latest`, { cache: "no-store" });
+        const response = await fetch(`/api/portfolio/${PORTFOLIO_ID}/snapshots?limit=1`, { cache: "no-store" });
         if (!response.ok) throw new Error("LATEST_SNAPSHOT_UNAVAILABLE");
         const data = await response.json() as { ok: boolean; latest: import("@/lib/portfolio-snapshot").PortfolioSnapshot | null };
         if (cancelled) return;
