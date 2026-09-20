@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { portfolio, TARGET_VALUE, TOTAL_PNL } from "@/lib/portfolio";
+import { portfolio, TARGET_VALUE } from "@/lib/portfolio";
 import type { Quote } from "@/lib/market-data/types";
 import { runDecisionEngine, topActionablePicks, strategyUniverse } from "@/lib/decision-engine";
-import { emptyPortfolioState, positionFor, STORAGE_KEY, upsertPosition, type PortfolioState, type Recommendation } from "@/lib/portfolio-state";
+import { emptyPortfolioState, initialRecommendations, positionFor, upsertPosition, type PortfolioState, type Recommendation } from "@/lib/portfolio-state";
 import { analyzePortfolioRefresh } from "@/lib/portfolio-analysis-agent";
 import { buildPortfolioSnapshot, persistLocalSnapshot, readLocalSnapshots, snapshotEvent, PORTFOLIO_ID } from "@/lib/portfolio-snapshot";
 
@@ -51,8 +51,35 @@ export default function Home() {
   const [refreshNonce,setRefreshNonce] = useState(0);
 
   useEffect(() => { stateRef.current = state; }, [state]);
-  useEffect(() => { try { const saved = window.localStorage.getItem(STORAGE_KEY); if(saved) setState(JSON.parse(saved) as PortfolioState); } catch { setNotice("Saved portfolio state could not be read; using a fresh M4 state."); } finally { setHydrated(true); } }, []);
-  useEffect(() => { if(hydrated) window.localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); },[state,hydrated]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch(`/api/portfolio/${PORTFOLIO_ID}/snapshots/latest`, { cache: "no-store" });
+        if (!response.ok) throw new Error("LATEST_SNAPSHOT_UNAVAILABLE");
+        const data = await response.json() as { ok: boolean; latest: import("@/lib/portfolio-snapshot").PortfolioSnapshot | null };
+        if (cancelled) return;
+        if (data.latest) {
+          const snapshot = data.latest;
+          setState({
+            cash: snapshot.portfolio.cash_usd,
+            positions: snapshot.positions.map(p => ({ ticker: p.ticker, shares: p.quantity, avgCost: p.average_cost_usd, source: "DERIVED" })),
+            transactions: [],
+            recommendations: initialRecommendations.map(r => ({ ...r })),
+          });
+          setMessage(`Loaded authoritative snapshot ${snapshot.snapshot_id} · ${money(snapshot.portfolio.total_value_usd)}`);
+        } else {
+          setState(emptyPortfolioState());
+          setNotice("No server snapshot exists yet; the first successful market refresh will create the authoritative snapshot.");
+        }
+      } catch {
+        if (!cancelled) setNotice("Could not load the authoritative portfolio snapshot.");
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled=false, refreshInProgress=false;
@@ -65,8 +92,9 @@ export default function Home() {
         const nextQuotes=Object.fromEntries((data.quotes as Quote[]).map(q=>[q.ticker,q]));
         setQuotes(nextQuotes);setMarketState("live");
         const result = await emitPortfolioSnapshot(stateRef.current, nextQuotes);
+        setState({ cash: result.snapshot.portfolio.cash_usd, positions: result.snapshot.positions.map(p => ({ ticker: p.ticker, shares: p.quantity, avgCost: p.average_cost_usd, source: "DERIVED" })), transactions: stateRef.current.transactions, recommendations: stateRef.current.recommendations });
         const alertText = result.analysis.alerts.length > 0 ? ` Agent alert: ${result.analysis.alerts.join(" ")}` : " Agent: no material portfolio action detected.";
-        setMessage(`Updated ${new Date(data.fetchedAt).toLocaleTimeString()}. Snapshot ${result.snapshot.snapshot_id} created and consumed by the analysis agent.${alertText}`);
+        setMessage(`Updated ${new Date(data.fetchedAt).toLocaleTimeString()}. Authoritative snapshot ${result.snapshot.snapshot_id} · ${money(result.snapshot.portfolio.total_value_usd)}.${alertText}`);
       } catch { if(!cancelled){setMarketState("error");setMessage("Could not persist the portfolio snapshot; no server-authoritative refresh was created.");} }
       finally { if(!cancelled){setIsRefreshing(false);setRefreshCountdown(QUOTE_REFRESH_SECONDS);} refreshInProgress=false; }
     };
@@ -94,7 +122,7 @@ export default function Home() {
 
   function derivedShares(ticker:string,snapshotValue:number){const q=quotes[ticker];return q&&q.price>0?snapshotValue/q.price:undefined;}
   function effectiveShares(ticker:string,snapshotValue:number){const p=positionFor(state,ticker);return p?p.shares:derivedShares(ticker,snapshotValue)??0;}
-  const holdingViews=useMemo<HoldingView[]>(()=>{const base=portfolio.map(h=>({ticker:h.ticker,name:h.name,snapshotValue:h.value,action:h.action,actionAmount:h.actionAmount,thesis:h.thesis}));for(const p of state.positions)if(!base.some(h=>h.ticker===p.ticker))base.push({ticker:p.ticker,name:`${p.ticker} position`,snapshotValue:p.shares*(quotes[p.ticker]?.price??0),action:"HOLD",actionAmount:0,thesis:"Approved position; included in portfolio state."});return base;},[state.positions,quotes]);
+  const holdingViews=useMemo<HoldingView[]>(()=>state.positions.map(p=>{const metadata=portfolio.find(h=>h.ticker===p.ticker);return {ticker:p.ticker,name:metadata?.name??`${p.ticker} position`,snapshotValue:p.shares*(quotes[p.ticker]?.price??0),action:metadata?.action??"HOLD",actionAmount:metadata?.actionAmount??0,thesis:metadata?.thesis??"Authoritative server snapshot position."};}),[state.positions,quotes]);
   const portfolioValue=useMemo(()=>holdingViews.reduce((sum,h)=>{const p=positionFor(state,h.ticker),q=quotes[h.ticker];return sum+(p&&q?p.shares*q.price:h.snapshotValue);},state.cash),[holdingViews,state,quotes]);
   const progress=Math.min(100,portfolioValue/TARGET_VALUE*100), gap=Math.max(0,TARGET_VALUE-portfolioValue), investedValue=portfolioValue-state.cash, approvedCount=state.transactions.length;
 
@@ -115,7 +143,7 @@ export default function Home() {
 
     <section className="panel" style={{marginTop:18}}><div className="eyebrow">Portfolio state</div><h2>Holdings &amp; share quantities</h2><p className="section-note">AUTO uses MilliPort's known dollar holding and current price. MANUAL lets you enter the exact broker quantity. Manual quantities take precedence.</p><div className="table-wrap"><table className="table"><thead><tr><th>Asset</th><th>Shares</th><th>Price</th><th>Market value</th><th>Avg cost</th><th>Action</th></tr></thead><tbody>{holdingViews.map(h=>{const p=positionFor(state,h.ticker),q=quotes[h.ticker],derived=!p||p.source==="DERIVED"?derivedShares(h.ticker,h.snapshotValue):undefined,shares=effectiveShares(h.ticker,h.snapshotValue),value=q?shares*q.price:h.snapshotValue;return <tr key={h.ticker}><td><div className="ticker">{h.ticker}</div><div className="reason">{h.name}</div></td><td><div className="share-cell"><input className="shares-input" type="number" min="0" step="any" placeholder={derived!==undefined?sharesText(derived):"Auto"} value={p?.source==="MANUAL"?p.shares:""} onChange={e=>setManualShares(h.ticker,e.target.value)}/><span className={`share-source ${p?.source==="MANUAL"?"manual":"derived"}`}>{p?.source==="MANUAL"?"MANUAL":"AUTO"}</span></div>{p?.source==="DERIVED"&&<div className="reason">Approved: {sharesText(p.shares)} shares</div>}</td><td>{q?preciseMoney(q.price):"—"}</td><td>{money(value)}</td><td>{p?.avgCost?preciseMoney(p.avgCost):"—"}</td><td><span className={`action ${h.action.toLowerCase()}`}>{h.action}{h.actionAmount?` ${money(h.actionAmount)}`:""}</span></td></tr>})}</tbody></table></div></section>
 
-    <section className="grid" style={{marginTop:18}}><div className="panel metric"><div className="label">Snapshot P&amp;L</div><div className="number">{money(TOTAL_PNL)}</div><div className="reason">Baseline portfolio snapshot</div></div><div className="panel metric"><div className="label">Invested value</div><div className="number">{money(investedValue)}</div><div className="reason">Portfolio value less recorded cash</div></div><div className="panel metric"><div className="label">Agent candidates</div><div className="number">{strategyUniverse.length}</div><div className="reason">Current controlled M4 universe</div></div><div className="panel metric"><div className="label">Decision mode</div><div className="number">MANUAL</div><div className="reason">Human approval required</div></div></section>
+    <section className="grid" style={{marginTop:18}}><div className="panel metric"><div className="label">Snapshot P&amp;L</div><div className="number">{money(state.positions.reduce((sum,p)=>{const q=quotes[p.ticker];return sum+(q?q.price*p.shares-p.avgCost*p.shares:0);},0))}</div><div className="reason">Baseline portfolio snapshot</div></div><div className="panel metric"><div className="label">Invested value</div><div className="number">{money(investedValue)}</div><div className="reason">Portfolio value less recorded cash</div></div><div className="panel metric"><div className="label">Agent candidates</div><div className="number">{strategyUniverse.length}</div><div className="reason">Current controlled M4 universe</div></div><div className="panel metric"><div className="label">Decision mode</div><div className="number">MANUAL</div><div className="reason">Human approval required</div></div></section>
 
     <section className="panel" style={{marginTop:18}}><div className="eyebrow">Audit trail</div><h2>Recent decisions</h2>{decided.length===0?<div className="empty">No decisions recorded yet.</div>:<div>{[...decided].reverse().slice(0,12).map(rec=><div className="history-row" key={rec.id}><span>{new Date(rec.decidedAt??rec.createdAt).toLocaleString()}</span><strong>{rec.ticker}</strong><span>{rec.action} {money(rec.amount)}</span><span>{rec.status}</span></div>)}</div>}</section>
 
