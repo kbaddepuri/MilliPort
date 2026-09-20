@@ -10,16 +10,19 @@ function agentAuthorized(request: Request): boolean {
 }
 
 function sameOrigin(request: Request): boolean {
+  const requestOrigin = new URL(request.url).origin;
   const origin = request.headers.get("origin");
-  if (!origin) return false;
-  return origin === new URL(request.url).origin;
+  if (origin) return origin === requestOrigin;
+  const referer = request.headers.get("referer");
+  if (referer) return new URL(referer).origin === requestOrigin;
+  return request.headers.get("sec-fetch-site") === "same-origin";
 }
 
 export async function GET(
   request: Request,
   context: { params: Promise<{ portfolioId: string }> },
 ) {
-  if (!agentAuthorized(request)) return NextResponse.json({ ok: false, error: "UNAUTHORIZED" }, { status: 401 });
+  if (!agentAuthorized(request) && !sameOrigin(request)) return NextResponse.json({ ok: false, error: "UNAUTHORIZED" }, { status: 401 });
   const { portfolioId } = await context.params;
   const url = new URL(request.url);
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 30) || 30, 1), 100);
